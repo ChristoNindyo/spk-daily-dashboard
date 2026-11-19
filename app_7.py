@@ -74,15 +74,18 @@ def load_data(_engine):
             df[col] = pd.to_datetime(df[col], errors='coerce')
             
     # 3. STRICT FILTER: Strip out ANY rows with lingering 2021 dates 
-    # in the other columns to protect the sliders
     for col in date_cols:
         if col in df.columns:
             df = df[(df[col].dt.year == current_year) | (df[col].isna())]
             
-    # 4. Convert back to standard date format for the Streamlit UI
-    for col in date_cols:
+    # 4. Convert tglspk & tglterima to date, KEEP tglinputspk as full datetime
+    for col in ['tglspk', 'tglterima']:
         if col in df.columns:
             df[col] = df[col].dt.date
+            
+    if 'tglinputspk' in df.columns:
+        # Convert Pandas Timestamp to standard Python datetime (flooring seconds for clean UI)
+        df['tglinputspk'] = df['tglinputspk'].dt.floor('min').dt.to_pydatetime()
             
     return df
 
@@ -119,35 +122,59 @@ if "status_pembebanan" in filtered_df.columns:
     if selected_status != "All":
         filtered_df = filtered_df[filtered_df["status_pembebanan"] == selected_status]
 
-# D. Date Sliders for "tglspk", "tglterima", "tglinputspk"
-def add_date_slider(col_name, label):
+# D. Date & Datetime Sliders
+def add_date_slider(col_name, label, include_time=False):
     global filtered_df
     if col_name in filtered_df.columns:
         valid_dates = filtered_df[col_name].dropna()
         if not valid_dates.empty:
-            
-            # Lock the UI limits strictly to Jan 1 - Dec 31 of THIS year
             current_year = datetime.date.today().year
-            start_of_year = datetime.date(current_year, 1, 1)
-            end_of_year = datetime.date(current_year, 12, 31)
             
-            # Clamp the default slider values to ensure they don't break boundaries
-            min_d = max(valid_dates.min(), start_of_year)
-            max_d = min(valid_dates.max(), end_of_year)
-            
-            if min_d <= max_d:
-                date_range = st.sidebar.slider(
-                    label, 
-                    min_value=start_of_year, 
-                    max_value=end_of_year, 
-                    value=(min_d, max_d)
-                )
-                filtered_df = filtered_df[(filtered_df[col_name] >= date_range[0]) & (filtered_df[col_name] <= date_range[1])]
+            if include_time:
+                # Use datetime objects with hours and minutes
+                start_of_year = datetime.datetime(current_year, 1, 1, 0, 0)
+                end_of_year = datetime.datetime(current_year, 12, 31, 23, 59)
+                
+                min_d = max(pd.to_datetime(valid_dates.min()).to_pydatetime(), start_of_year)
+                max_d = min(pd.to_datetime(valid_dates.max()).to_pydatetime(), end_of_year)
+                
+                if min_d <= max_d:
+                    date_range = st.sidebar.slider(
+                        label,
+                        min_value=start_of_year,
+                        max_value=end_of_year,
+                        value=(min_d, max_d),
+                        step=datetime.timedelta(minutes=15), # Adjust step (e.g., minutes=1 or minutes=30)
+                        format="YYYY-MM-DD HH:mm"
+                    )
+                    filtered_df = filtered_df[
+                        (filtered_df[col_name] >= date_range[0]) & 
+                        (filtered_df[col_name] <= date_range[1])
+                    ]
+            else:
+                # Standard date-only slider
+                start_of_year = datetime.date(current_year, 1, 1)
+                end_of_year = datetime.date(current_year, 12, 31)
+                
+                min_d = max(valid_dates.min(), start_of_year)
+                max_d = min(valid_dates.max(), end_of_year)
+                
+                if min_d <= max_d:
+                    date_range = st.sidebar.slider(
+                        label, 
+                        min_value=start_of_year, 
+                        max_value=end_of_year, 
+                        value=(min_d, max_d)
+                    )
+                    filtered_df = filtered_df[
+                        (filtered_df[col_name] >= date_range[0]) & 
+                        (filtered_df[col_name] <= date_range[1])
+                    ]
 
 st.sidebar.markdown("### 📅 Date Filters")
-add_date_slider("tglspk", "Tanggal SPK")
-add_date_slider("tglterima", "Tanggal Terima")
-add_date_slider("tglinputspk", "Tanggal Input SPK")
+add_date_slider("tglspk", "Tanggal SPK", include_time=False)
+add_date_slider("tglterima", "Tanggal Terima", include_time=False)
+add_date_slider("tglinputspk", "Tanggal Input SPK", include_time=True)
 
 # ==========================================
 # 5. DASHBOARD METRICS (SCORE CARDS)
@@ -179,7 +206,6 @@ st.markdown("---")
 # ==========================================
 st.subheader(f"Penerimaan LSN ({len(filtered_df)} results)")
 
-# Define the exact column order requested
 target_order = [
     "namabengkel", 
     "no_spk", 
@@ -189,15 +215,12 @@ target_order = [
     "tglinputspk"
 ]
 
-# Ensure we only try to reorder columns that actually exist in the dataframe
 available_cols = [col for col in target_order if col in filtered_df.columns]
 remaining_cols = [col for col in filtered_df.columns if col not in available_cols]
 final_order = available_cols + remaining_cols
 
-# Reorder the dataframe
 display_df = filtered_df[final_order].copy()
 
-# Rename the columns for the UI
 column_mapping = {
     "namabengkel": "Nama Bengkel",
     "no_spk": "No SPK",
@@ -208,12 +231,18 @@ column_mapping = {
 }
 display_df = display_df.rename(columns=column_mapping)
 
-# Render the formatted table
+# Render the formatted table with explicit hour:minute formatting
 st.dataframe(
     display_df,
     use_container_width=True,
     hide_index=True,
-    height=600
+    height=600,
+    column_config={
+        "tgl input SPK": st.column_config.DatetimeColumn(
+            "tgl input SPK",
+            format="YYYY-MM-DD HH:mm"
+        )
+    }
 )
 
 # ==========================================
